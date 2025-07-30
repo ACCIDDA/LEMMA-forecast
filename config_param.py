@@ -25,7 +25,7 @@ import preprocess.util_function as pp
 ############ Model Hyperparams ##################
 rlags = np.array([0])
 rlag_list = np.arange(1, len(rlags) + 1)
-un_list = np.array([100.0])
+un_list = np.array([50.0])
 halpha_list = np.arange(0.98, 0.92, -0.02)
 S = np.array([0.0])
 hyperparams_lists = [halpha_list, rlag_list, un_list, S]
@@ -58,7 +58,7 @@ quantiles = np.array([0.025, 0.5, 0.975])
 #hosp_cumu_s_org= np.loadtxt('data/hosp_cumu_s.csv', delimiter=',')
 hosp_dat = pd.read_csv('data/ts_dat.csv', delimiter=',', header = None).to_numpy()
 
-location_dat = pd.read_csv('data/location_dat.csv', delimiter=',')
+location_dat = pd.read_csv("data/location_dat.csv", delimiter=',')
 
 
 alpha = 1

@@ -52,12 +52,21 @@ def generate_predictors(hosp_cumu_s_org, hosp_dat, popu, config_param, retro_loo
         base_hosp = hosp_cumu[:, T_full-1]
 
 
+        # Create a dictionary with only the necessary config parameters
+        config_params = {
+            'num_dh_rates_sample': config_param.num_dh_rates_sample,
+            'horizon': config_param.horizon,
+            'rlags': config_param.rlags,
+            'hk': config_param.hk,
+            'hjp': config_param.hjp
+        }
+        
         # Create a list of tasks, each task is a tuple (simnum, scenario)
         tasks = [(simnum, scen_list[simnum]) for simnum in range(scen_list.shape[0])]
         #'''
         # Parallel version
         with ProcessPoolExecutor() as executor:
-            futures = {executor.submit(process_scenario, task, hosp_cumu_s, hosp_cumu, popu, config_param, base_hosp): task[0] for task in tasks}
+            futures = {executor.submit(process_scenario, task, hosp_cumu_s, hosp_cumu, popu, config_params, base_hosp): task[0] for task in tasks}
             
             for future in as_completed(futures):
                 simnum = futures[future]
@@ -70,7 +79,7 @@ def generate_predictors(hosp_cumu_s_org, hosp_dat, popu, config_param, retro_loo
             simnum, scenario = task
             #try:
             # Process the scenario and store the result in net_h_cell at the index corresponding to simnum
-            net_h_cell[simnum] = process_scenario(task,hosp_cumu_s, hosp_cumu, popu, config_param, base_hosp)
+            net_h_cell[simnum] = process_scenario(task, hosp_cumu_s, hosp_cumu, popu, config_params, base_hosp)
             # except Exception as exc:
             #     print(f"Scenario {simnum} generated an exception: {exc}")
             #     net_h_cell[simnum] = -1000    

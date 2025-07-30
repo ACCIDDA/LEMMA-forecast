@@ -65,6 +65,8 @@ def update_config_file(updated_keys):
         # Format value
         if key == "hosp_dat":
             formatted_value = f"pd.read_csv('{value}')"
+        elif key == "location_dat":
+            formatted_value = f"pd.read_csv('{value}')"
         elif key == "popu":
             formatted_value = f"np.loadtxt('{value}')"
         elif key == "halpha_list":
@@ -91,6 +93,8 @@ def update_config_file(updated_keys):
         value = updated_keys[key]
 
         if key == "hosp_dat":
+            formatted_value = f"pd.read_csv('{value}')"
+        elif key == "location_dat":
             formatted_value = f"pd.read_csv('{value}')"
         elif key == "popu":
             formatted_value = f"np.loadtxt('{value}')"
@@ -269,15 +273,19 @@ with left_col:
         except Exception as e:
             st.error(f"❌ Error loading file: {e}")
 
-    location_file = st.file_uploader("Upload Location, Population Data (TXT)", type=["txt"])
+    location_file = st.file_uploader("Upload Location, Population Data (CSV)", type=["csv"])
     if location_file:
-        location_dat = pd.read_csv(location_file, delimiter=',')
-        popu = location_dat['population'].to_numpy()
-        state_abbr = location_dat['location_name'].to_list()
-        pd.to_csv("data/location_dat.csv", popu)  
-        updated_params["popu"] = popu
-        updated_params["state_abbr"] = state_abbr 
-        st.success("✅ Location data updated!")
+        try:
+            location_dat = pd.read_csv(location_file, delimiter=',')
+            location_dat.to_csv("data/location_dat.csv", index=False)  
+            
+            # Force reload the config to pick up the new data
+            importlib.reload(config_param)
+            
+            st.success("✅ Location data updated!")
+        except Exception as e:
+            st.error(f"❌ Error loading file: {e}")
+         
 
     st.markdown("---")
     st.markdown("### 🎯 Target Parameters")
