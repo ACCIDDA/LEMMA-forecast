@@ -8,9 +8,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import sys
+import os
 #sys.path.append('~/code/lemma-repo/LEMMA')
 from shared_utils.utils import bin_array
-from input_models import model_config
+from approaches import get_approach, approaches as model_config_approaches
 if "forecast_ready" not in st.session_state:
     st.session_state["forecast_ready"] = False
 
@@ -118,12 +119,25 @@ def update_config_file(updated_keys):
         new_lines.append(f"{key} = {formatted_value}\n")
 
     try:
-        with open(CONFIG_FILE, "w") as f:
+        # Atomic write to avoid partial file reads during reload
+        tmp_path = CONFIG_FILE + ".tmp"
+        with open(tmp_path, "w") as f:
             f.writelines(new_lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, CONFIG_FILE)
 
-        importlib.reload(config_param)
+        # Robust reload: invalidate caches, then reload or import fresh
+        importlib.invalidate_caches()
+        global config_param
+        if 'config_param' in sys.modules:
+            config_param = importlib.reload(sys.modules['config_param'])
+        else:
+            config_param = importlib.import_module('config_param')
     except Exception as e:
-        st.error(f"❌ Error updating config file: {e}")
+        # Avoid noisy failures if UI is mid-rerun; apply on next run
+        st.warning("Config updated. Changes will apply on the next run.")
+        st.info(f"Details: {e}")
         return
 
 
@@ -134,21 +148,19 @@ params = get_parameters()
 updated_params = {}
 
 st.sidebar.header("🔬 Predictor Settings")
-st.sidebar.markdown("### 🔧 Model Selection")
+st.sidebar.markdown("### 🔧 Approach Selection")
 
-est_model = st.sidebar.selectbox("Estimation Model", list(model_config.estimation_models.keys()))
-sim_model = st.sidebar.selectbox("Simulation Model", list(model_config.simulation_models.keys()))
+approach_options = list(model_config_approaches.keys())
+selected_approach_label = st.sidebar.selectbox("Approach", approach_options)
 
-st.session_state["selected_estimation_model"] = est_model
-st.session_state["selected_simulation_model"] = sim_model
+# Persist and write to config so back-end uses it
+st.session_state["selected_approach"] = selected_approach_label
+updated_params["selected_approach"] = selected_approach_label
 st.markdown("---")
 
-st.sidebar.markdown("### 🔧 Model Hyperparameters")
-        
-model_hyperparams = list(set(
-    model_config.estimation_models.get(est_model, []) +
-    model_config.simulation_models.get(sim_model, [])
-))
+st.sidebar.markdown("### 🔧 Hyperparameters")
+
+model_hyperparams = model_config_approaches.get(selected_approach_label, [])
 
 for param in model_hyperparams:
     default = None
@@ -200,13 +212,19 @@ for param in model_hyperparams:
 
     updated_params[param] = val
 with st.sidebar.expander("ℹ️ How to configure hyperparameters"):
-    st.markdown("""
-    - **bin_size**: Size of the rolling window.
-    - **rlags**: Smoothing factor for the forecast. Higher values = smoother.
-    - **un_list**: Number of training iterations.
-    - **S**: Choose a loss function that matches your objective.
-    - **num_dh_rates_sample**: Number of samples drawn for hospitalization delay rates.
-    """)
+    try:
+        approach_mod = get_approach(selected_approach_label)
+        help_text = getattr(approach_mod, "HYPERPARAMS_DOC", None)
+        if not help_text:
+            help_text = (
+                f"No detailed hyperparameter description provided for '{selected_approach_label}'.\n\n"
+                "Tip: Add HYPERPARAMS_DOC = \"\"\"...\"\"\" in the approach module to populate this help."
+            )
+        st.markdown(help_text)
+    except Exception as _e:
+        st.markdown(
+            "No detailed hyperparameter description available."
+        )
 
 
 if "train_ranges" not in st.session_state:
@@ -371,44 +389,59 @@ with right_col:
    
 
     st.subheader("📊 Forecast Results")
+    # Choose ensemble strategy (two options)
+    ensemble_choice = st.selectbox(
+        "Ensemble method",
+        options=["Random Forest", "Basic"],
+        index=0,
+        help="Choose how to combine predictor outputs into final forecasts"
+    )
+    st.session_state["ensemble_method"] = ensemble_choice
+    # Button logic: always show Save & Run; show Rerun Ensemble if predictors exist
+    has_preds = ("all_preds" in st.session_state) and isinstance(st.session_state["all_preds"], dict) and len(st.session_state["all_preds"]) > 0
+
     if st.button("💾 Save & Run Forecasts", use_container_width=True):
         if updated_params:
             update_config_file(updated_params)
-            st.toast("✅ Configuration Updated!")
-        
-            progress_bar = st.progress(0.0)
-            progress_text = st.empty()  # Create an empty container for text
+            st.toast("✅ Configuration Updated!") 
 
-            def update_progress(progress):
-                progress_bar.progress(progress)
-                progress_text.info(f"Progress: {int(progress * 100)}%")
+        progress_bar = st.progress(0.0)
+        progress_text = st.empty()  # Create an empty container for text
 
-            st.session_state["all_preds"], st.session_state["hosp_dat"] = gen_predictions.generate_all_preds(update_progress)
+        def update_progress(progress):
+            progress_bar.progress(progress)
+            progress_text.info(f"Progress: {int(progress * 100)}%")
+
+        st.session_state["all_preds"], st.session_state["hosp_dat"] = gen_predictions.generate_all_preds(update_progress)
 
         st.toast("✅ Predictors generated successfully!")
 
+        # Build ensemble instance from selection
+        import config_model as _cfg_model
+        ensemble = _cfg_model.create_ensemble(st.session_state.get("ensemble_method", ensemble_choice))
+
         with st.spinner('Generating "ensemble" forecasts...'):
             st.session_state["preds"] = gen_predictions.generate_preds(
-                st.session_state["all_preds"], st.session_state["hosp_dat"]
+                st.session_state["all_preds"], st.session_state["hosp_dat"], ensemble=ensemble
             )
         st.toast("✅ Predictions generated successfully!")
         st.session_state["forecast_ready"] = True
-  
-    if st.session_state.get("forecast_ready"):    
-        if st.button("🔁 Run Predictions", use_container_width=True):
+
+    if has_preds:
+        if st.button("🔁 Rerun Ensemble", use_container_width=True):
+            # Optional: update only ensemble-related params (e.g., quantiles). For now, apply any updates.
             if updated_params:
                 update_config_file(updated_params)
-                st.toast("✅ Predictors Configuration Updated!")
-                
-            if "all_preds" in st.session_state and "hosp_dat" in st.session_state:
-                with st.spinner("Re-generating predictions..."):
-                    st.session_state["preds"] = gen_predictions.generate_preds(
-                        st.session_state["all_preds"], st.session_state["hosp_dat"]
-                    )
-                st.toast("✅ Predictions re-generated successfully!")
-                st.session_state["forecast_ready"] = True
-            else:
-                st.error("❌ Please run the initial forecast generation first.")
+                st.toast("✅ Ensemble Configuration Updated!")
+
+            import config_model as _cfg_model
+            ensemble = _cfg_model.create_ensemble(st.session_state.get("ensemble_method", ensemble_choice))
+            with st.spinner("Re-generating ensemble predictions..."):
+                st.session_state["preds"] = gen_predictions.generate_preds(
+                    st.session_state["all_preds"], st.session_state["hosp_dat"], ensemble=ensemble
+                )
+            st.toast("✅ Ensemble re-generated successfully!")
+            st.session_state["forecast_ready"] = True
 
     state_abbr = config_param.state_abbr
     

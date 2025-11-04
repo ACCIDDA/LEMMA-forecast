@@ -1,13 +1,13 @@
 import pandas as pd
 import numpy as np
 import config_param
-from process_scenario import *
+from approaches import get_approach
+from process_scenario import process_scenario
 from math import ceil
 from preprocess.util_function import smooth_epidata
 from itertools import product
-#from concurrent.futures import ProcessPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from loky import ProcessPoolExecutor, as_completed
+
 
 def generate_predictors(hosp_cumu_s_org, hosp_dat, popu, config_param, retro_lookback, progress_callback = None):
 
@@ -16,89 +16,101 @@ def generate_predictors(hosp_cumu_s_org, hosp_dat, popu, config_param, retro_loo
     hosp_cumu_orig = np.nancumsum(np.nan_to_num(hosp_dat), axis=1)
     num_states = len(popu)
 
+    # Prepare tasks across both retro_lookback and scenarios (one task per (lookback, scenario))
     all_preds = {}
-    progress_count = 0
+    approach_name = getattr(config_param, "selected_approach", "SIKJalpha Basic")
+    approach = get_approach(approach_name)
+
+    # Metadata and tracking
+    meta = {}
+    results_by_x = {}
+    remaining_by_x = {}
+    finished_x = set()
+
+    # Build tasks and per-lookback metadata
+    tasks = []
     for x in retro_lookback:
-    
-        wks_back = x 
-        hosp_cumu_s = hosp_cumu_s_org
-        hosp_cumu = hosp_cumu_orig
-        T_full = days - wks_back * config_param.bin_size  # Computing T_full by subtracting 7*wks_back from days
-        thisday = T_full  
-        ns = hosp_cumu_s.shape[0]  # Getting the number of rows in hosp_cumu_s
-        
+        wks_back = x
+        T_full = days - wks_back * config_param.bin_size
+        ns = hosp_cumu_s_org.shape[0]
+
         if wks_back == 0:
-            # if wks_back is zero, use the entire array
-            hosp_cumu_s = hosp_cumu_s[:, :]
-            hosp_cumu = hosp_cumu[:, :]
+            hosp_cumu_s_cut = hosp_cumu_s_org[:, :]
+            hosp_cumu_cut = hosp_cumu_orig[:, :]
         else:
-            # if wks_back is non-zero, then proceed with the original slicing
-            hosp_cumu_s = hosp_cumu_s[:, :-(wks_back*config_param.bin_size)]
-            hosp_cumu = hosp_cumu[:, :-(wks_back*config_param.bin_size)]
-        
-        
-        scen_list = []
-        for scenario in product(*config_param.hyperparams_lists):
-            scen_list.append(list(scenario))
+            hosp_cumu_s_cut = hosp_cumu_s_org[:, :-(wks_back * config_param.bin_size)]
+            hosp_cumu_cut = hosp_cumu_orig[:, :-(wks_back * config_param.bin_size)]
 
-        scen_list = np.array(scen_list)
-        
-        net_hosp_A = np.empty((len(scen_list)*config_param.num_dh_rates_sample, ns, config_param.horizon))
+        scen_list = approach.build_scenarios(config_param)
+        config_params = approach.make_config(config_param)
+        base_hosp = hosp_cumu_cut[:, T_full - 1]
+        n_scen = scen_list.shape[0]
 
-        net_hosp_A[:] = np.nan
-        
-        net_h_cell = [None] * len(scen_list)  
-        
-        base_hosp = hosp_cumu[:, T_full-1]
+        meta[x] = {"ns": ns, "horizon": config_param.horizon, "n_scen": n_scen}
+        results_by_x[x] = [None] * n_scen
+        remaining_by_x[x] = n_scen
 
+        for simnum in range(n_scen):
+            scenario = scen_list[simnum]
+            tasks.append(
+                (
+                    x,
+                    simnum,
+                    (simnum, scenario),
+                    hosp_cumu_s_cut,
+                    hosp_cumu_cut,
+                    popu,
+                    config_params,
+                    base_hosp,
+                )
+            )
 
-        # Create a dictionary with only the necessary config parameters
-        config_params = {
-            'num_dh_rates_sample': config_param.num_dh_rates_sample,
-            'horizon': config_param.horizon,
-            'rlags': config_param.rlags,
-            'hk': config_param.hk,
-            'hjp': config_param.hjp
-        }
-        
-        # Create a list of tasks, each task is a tuple (simnum, scenario)
-        tasks = [(simnum, scen_list[simnum]) for simnum in range(scen_list.shape[0])]
-        #'''
-        # Parallel version
-        with ProcessPoolExecutor() as executor:
-            futures = {executor.submit(process_scenario, task, hosp_cumu_s, hosp_cumu, popu, config_params, base_hosp): task[0] for task in tasks}
-            
-            for future in as_completed(futures):
-                simnum = futures[future]
-                net_h_cell[simnum] = future.result()
+    # Submit all tasks in a single pool; the executor will handle distribution
+    with ProcessPoolExecutor() as executor:
+        future_map = {}
+        total_tasks = len(tasks)
+        tasks_done = 0
+        for (x, simnum, simargs, hosp_s, hosp_c, popu_, cfg_params, base_h) in tasks:
+            fut = executor.submit(
+                process_scenario, simargs, hosp_s, hosp_c, popu_, cfg_params, base_h
+            )
+            future_map[fut] = (x, simnum)
 
-        '''
-        # Serial version
-        
-        for task in tasks:
-            simnum, scenario = task
-            #try:
-            # Process the scenario and store the result in net_h_cell at the index corresponding to simnum
-            net_h_cell[simnum] = process_scenario(task, hosp_cumu_s, hosp_cumu, popu, config_params, base_hosp)
-            # except Exception as exc:
-            #     print(f"Scenario {simnum} generated an exception: {exc}")
-            #     net_h_cell[simnum] = -1000    
-        '''
-        
-        for simnum in range(scen_list.shape[0]):
-            net_hosp_A[simnum , :, :] = np.nanmean(net_h_cell[simnum], axis=0)
-        indd = int(config_param.npredictors/config_param.num_dh_rates_sample)
-        p = np.squeeze(net_hosp_A[0:indd, :, :])
-        predictors = np.diff(p, axis=2)
-        lo = predictors[:, :, 0:config_param.weeks_ahead*config_param.bin_size]
-        all_preds[x] = lo
-        
-        
-        progress_count += 1
-        try:
-            progress_callback(progress_count / len(retro_lookback))
-        except:
-            pass
+        for future in as_completed(future_map):
+            x, simnum = future_map[future]
+            try:
+                res = future.result()
+            except Exception:
+                res = None
+            results_by_x[x][simnum] = res
+            remaining_by_x[x] -= 1
 
-        print(f"Done for lookback {x}. Progress: {config_param.predictor_progress:.2%}")
+            # Smooth, task-based progress update across all lookbacks and scenarios
+            try:
+                tasks_done += 1
+                if total_tasks > 0 and progress_callback is not None:
+                    progress_callback(tasks_done / total_tasks)
+            except Exception:
+                pass
+
+            # When a lookback completes, aggregate and emit predictors for that x
+            if remaining_by_x[x] == 0 and x not in finished_x:
+                finished_x.add(x)
+                ns = meta[x]["ns"]
+                horizon = meta[x]["horizon"]
+                n_scen = meta[x]["n_scen"]
+
+                net_hosp_A = np.empty((n_scen, ns, horizon))
+                net_hosp_A[:] = np.nan
+                for s in range(n_scen):
+                    if results_by_x[x][s] is not None:
+                        net_hosp_A[s, :, :] = np.nanmean(results_by_x[x][s], axis=0)
+
+                p = net_hosp_A
+                predictors = np.diff(p, axis=2)
+                lo = predictors[:, :, 0 : config_param.weeks_ahead * config_param.bin_size]
+                all_preds[x] = lo
+
+                print(f"Done for lookback {x}. {len(finished_x)}/{len(retro_lookback)} completed.")
+
     return all_preds

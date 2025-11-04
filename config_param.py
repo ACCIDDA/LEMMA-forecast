@@ -23,8 +23,10 @@ import shared_utils.utils
 import preprocess.util_function as pp
 
 ############ Model Hyperparams ##################
+# Select which predictor generation approach to use (UI updates this)
+selected_approach = "ARIMA"
 rlags = np.array([0])
-rlag_list = np.arange(1, len(rlags) + 1)
+rlag_list = np.array([1.0])
 un_list = np.array([50.0])
 halpha_list = np.arange(0.98, 0.92, -0.02)
 S = np.array([0.0])
@@ -32,6 +34,16 @@ hyperparams_lists = [halpha_list, rlag_list, un_list, S]
 hk = 2
 hjp = 7
 ########################
+
+# Approach-specific hyperparameters (defaults so scripts can run without UI)
+# ARIMA(p,d,0): p in ar_p_list, d in d_list
+ar_p_list = np.array([7.0, 14.0])
+d_list = np.array([0.0, 1.0, 2.0])
+
+# Flatline: use daily increment at t-k
+# If already defined later, this serves as default; keep as np.array-compatible
+# (defined again below if present; both are fine as approaches read via getattr)
+if 'flat_k_list' not in globals(): flat_k_list = np.array([0])
 
 npredictors = (len(S) * len(halpha_list) * len(un_list) * len(rlag_list))*(weeks_ahead)
 horizon = (weeks_ahead+1)*bin_size 
@@ -41,7 +53,7 @@ decay_factor = 0.99
 wks_back = 1
 # default_n_estimators = 100     #Moved to Config_model
 # quantiles = [0.010, 0.025, 0.050, 0.100, 0.150, 0.200, 0.250, 0.300, 0.350, 0.400, 0.450, 0.500, 0.550, 0.600, 0.650, 0.700, 0.750, 0.800, 0.850, 0.900, 0.950, 0.975, 0.990]
-quantiles = np.array([0.025, 0.5, 0.975])
+quantiles = np.array([0.0, 0.5, 1.0])
 
 
 #Retro Lookback
@@ -83,3 +95,4 @@ hosp_cumu_s_org = pp.smooth_epidata(np.cumsum(hosp_dat, axis=1))
 
 popu = location_dat['population'].to_numpy()
 state_abbr = location_dat['location_name'].to_list()
+flat_k_list = np.array([0.0, 7.0, 14.0])
