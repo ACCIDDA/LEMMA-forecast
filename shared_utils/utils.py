@@ -52,11 +52,17 @@ def regression_prep(all_preds, hosp_dat, retro_lookback):
             # Convert the list of rows to a 2D numpy array
         
         X = np.array(rows)
-        Y = bin_array(GT/config_param.popu[:, np.newaxis],T+1,config_param.bin_size,1)
-        if Y.shape[1] > config_param.weeks_ahead:
-            Y = Y[:, 0:config_param.weeks_ahead]
+        y_start = T + 1
+        if y_start >= GT.shape[1]:
+            # No future observed bins available from this origin; keep as NaN targets
+            # so test/lookback rows can still be used for prospective inference.
+            Y = np.nan * np.ones((GT.shape[0], config_param.weeks_ahead))
         else:
-            Y = np.concatenate([Y, np.nan*np.ones((Y.shape[0], config_param.weeks_ahead - Y.shape[1]))], axis=1)
+            Y = bin_array(GT/config_param.popu[:, np.newaxis], y_start, config_param.bin_size, 1)
+            if Y.shape[1] > config_param.weeks_ahead:
+                Y = Y[:, 0:config_param.weeks_ahead]
+            else:
+                Y = np.concatenate([Y, np.nan*np.ones((Y.shape[0], config_param.weeks_ahead - Y.shape[1]))], axis=1)
         
         w = config_param.decay_factor**(lookback-recent_lookback)
         w = w*np.ones(Y.shape[0])
@@ -73,7 +79,10 @@ def regression_prep(all_preds, hosp_dat, retro_lookback):
     # Create the DataFrame from the list of dictionaries
     ID = pd.DataFrame(ID_list)
 
-    nan_rows = np.isnan(X_train).any(axis=1) | np.isnan(Y_train).all(axis=1)
+    is_test_lookback = ID['lookback'].isin(config_param.test_lookback).to_numpy()
+    all_nan_target = np.isnan(Y_train).all(axis=1)
+    # Keep NaN-target rows only for requested test lookbacks (prospective origins).
+    nan_rows = np.isnan(X_train).any(axis=1) | (all_nan_target & ~is_test_lookback)
     X_train = X_train[~nan_rows]
     Y_train = Y_train[~nan_rows]
     W_train = W_train[~nan_rows]

@@ -6,7 +6,6 @@ from functools import partial
 from scipy.signal import savgol_filter
 from scipy.signal import find_peaks
 from scipy import signal
-from config_param import season_start_day
 import pandas as pd
 
 import warnings

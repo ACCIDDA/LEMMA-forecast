@@ -6,10 +6,18 @@ from process_scenario import process_scenario
 from math import ceil
 from preprocess.util_function import smooth_epidata
 from itertools import product
-from loky import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 
-def generate_predictors(hosp_cumu_s_org, hosp_dat, popu, config_param, retro_lookback, progress_callback = None):
+def generate_predictors(
+    hosp_cumu_s_org,
+    hosp_dat,
+    popu,
+    config_param,
+    retro_lookback,
+    progress_callback=None,
+    use_threads=False,
+):
 
     maxt = hosp_dat.shape[1]
     days = maxt
@@ -65,14 +73,23 @@ def generate_predictors(hosp_cumu_s_org, hosp_dat, popu, config_param, retro_loo
                 )
             )
 
+    executor_cls = ThreadPoolExecutor if use_threads else ProcessPoolExecutor
+
     # Submit all tasks in a single pool; the executor will handle distribution
-    with ProcessPoolExecutor() as executor:
+    with executor_cls() as executor:
         future_map = {}
         total_tasks = len(tasks)
         tasks_done = 0
         for (x, simnum, simargs, hosp_s, hosp_c, popu_, cfg_params, base_h) in tasks:
             fut = executor.submit(
-                process_scenario, simargs, hosp_s, hosp_c, popu_, cfg_params, base_h
+                process_scenario,
+                simargs,
+                hosp_s,
+                hosp_c,
+                popu_,
+                cfg_params,
+                base_h,
+                approach_name,
             )
             future_map[fut] = (x, simnum)
 
@@ -111,6 +128,9 @@ def generate_predictors(hosp_cumu_s_org, hosp_dat, popu, config_param, retro_loo
                 lo = predictors[:, :, 0 : config_param.weeks_ahead * config_param.bin_size]
                 all_preds[x] = lo
 
-                print(f"Done for lookback {x}. {len(finished_x)}/{len(retro_lookback)} completed.")
+                print(
+                    f"Completed forecast window "
+                    f"({len(finished_x)}/{len(retro_lookback)} ready)."
+                )
 
     return all_preds
